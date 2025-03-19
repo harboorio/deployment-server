@@ -1,0 +1,24 @@
+dist
+
+# Environment
+.env
+.env*.local
+*.env
+
+# dependencies
+/node_modules
+/.pnpm-store
+
+# IDEs and editors
+/.idea
+.project
+.classpath
+*.launch
+.settings/
+
+# Temp
+gitignore
+
+# System Files
+.DS_Store
+Thumbs.db

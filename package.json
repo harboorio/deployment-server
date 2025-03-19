@@ -1,0 +1,18 @@
+{
+    "name": "@harboorio/deployment-server",
+    "version": "0.1.0",
+    "description": "",
+    "type": "module",
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/harboorio/deployment-server.git"
+    },
+    "main": "./server.js",
+    "scripts": {
+        "dev": "node --watch server.js",
+        "start": "NODE_ENV=production node server.js"
+    },
+    "dependencies": {
+        "@harboor/core": "^1.3.1"
+    }
+}

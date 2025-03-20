@@ -72,7 +72,7 @@ import { fetchSecretsAws } from '@harboor/core'
         if (body?.action === 'published' && body?.release && apps.some((app) => app.name === body.repository.full_name)) {
             console.log('Deploying ' + body.repository.full_name + ':' + body.release.tag_name)
             const app = apps.find((app) => app.name === body.repository.full_name)
-            await deploy(app, body)
+            await deploy(app, body, res)
         }
 
         res.statusCode = 200
@@ -87,7 +87,7 @@ import { fetchSecretsAws } from '@harboor/core'
         console.info("Server is online.");
     });
 
-    async function deploy(app, event) {
+    async function deploy(app, event, res) {
         const tag = event.release.tag_name.replace(/[^0-9.]*/g, '')
         const nameUrlSafe = app.name
             .replace(/[^a-z0-9A-Z-_]/g, '-')
@@ -123,7 +123,8 @@ import { fetchSecretsAws } from '@harboor/core'
                 },
             })
 
-            exec('APP_IMAGE_VERSION=' + tag + ' docker compose --profile production up -d', async (error2, stdout2, stderr2) => {
+            const commands2 = ['APP_IMAGE_VERSION=' + tag + ' docker compose --profile production up -d']
+            exec(commands2.join(' && '), { cwd: DEPLOYMENT_PATH }, async (error2, stdout2, stderr2) => {
                 if (error2) {
                     console.error(error2)
                     res.statusCode = 400

@@ -110,7 +110,7 @@ import { customAlphabet } from 'nanoid'
             'git sparse-checkout set ' + app.gitCheckout.join(' '),
             'git checkout ' + app.gitBranch
         ]
-        exec(commands.join(' && '), { cwd: DEPLOYMENT_PATH }, async (error, stdout, stderr) => {
+        exec(commands.join(' && '), { cwd: DEPLOYMENT_PATH, timeout: 30000 }, async (error, stdout, stderr) => {
             if (error) {
                 return onDone(error, 400, 'Failed to checkout to the repository.')
             }
@@ -131,8 +131,8 @@ import { customAlphabet } from 'nanoid'
                 },
             })
 
-            const commands2 = ['APP_IMAGE_VERSION=' + tag + ' docker compose --profile production up -d']
-            exec(commands2.join(' && '), { cwd: DEPLOYMENT_PATH }, async (error2, stdout2, stderr2) => {
+            const commands2 = ['APP_IMAGE_VERSION=' + tag + ' docker compose --profile production up -d --quiet-pull -y']
+            exec(commands2.join(' && '), { cwd: DEPLOYMENT_PATH, timeout: 30000 }, async (error2, stdout2, stderr2) => {
                 await rm(secretsFilePath)
 
                 if (error2) {

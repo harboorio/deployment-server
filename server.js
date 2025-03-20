@@ -1,9 +1,17 @@
+import os from 'node:os'
+import { exec } from 'node:child_process'
+import path from 'node:path'
+import { mkdir } from 'node:fs/promises'
 import http from 'node:http'
 import { Buffer } from 'node:buffer'
 import crypto from 'node:crypto'
 import { fetchSecretsAws } from '@harboor/core'
 
 (async function initServer() {
+    const HOME_PATH = os.homedir()
+    const DEPLOYMENTS_PATH = path.resolve(HOME_PATH, 'deployments')
+    await mkdir(DEPLOYMENTS_PATH)
+
     const secrets =
         process.env.NODE_ENV === "development"
             ? process.env
@@ -18,12 +26,20 @@ import { fetchSecretsAws } from '@harboor/core'
                 },
             });
     const env = createEnvironment(secrets);
+    const apps = [
+        { name: 'harboorio/auth-backend', aws: { secretName: 'prod/harboor/auth' }, gitBranch: 'main', gitCheckout: ['compose.yaml'] }
+    ]
     const server = http.createServer({
         keepAliveTimeout: 30000,
         requestTimeout: 60000,
     })
 
     server.on('request', async function onRequest(req, res) {
+        res
+            .setHeader("Referrer-Policy", "strict-origin-when-cross-origin")
+            .setHeader("Strict-Transport-Security", "max-age=31536000")
+            .setHeader("Vary", "Origin,Accept-Language");
+
         if (req.method !== 'POST' && req.url !== '/on/release') {
             res.statusCode = 400
             return res.end('Invalid request.')
@@ -51,8 +67,13 @@ import { fetchSecretsAws } from '@harboor/core'
             return res.end('Invalid body.')
         }
 
-        //if (body.action === 'published' && body.repository)
         console.log(body)
+
+        if (body?.action === 'published' && body?.release && apps.some((app) => app.name === body.repository.full_name)) {
+            console.log('Deploying ' + body.repository.full_name + ':' + body.release.tag_name)
+            const app = apps.find((app) => app.name === body.repository.full_name)
+            await deploy(app, body)
+        }
 
         res.statusCode = 200
         res.setHeader('Content-Type', 'application/json')
@@ -65,6 +86,58 @@ import { fetchSecretsAws } from '@harboor/core'
     server.listen(env.get('SERVER_PORT') ?? 3000, "0.0.0.0", () => {
         console.info("Server is online.");
     });
+
+    async function deploy(app, event) {
+        const tag = event.release.tag_name.replace(/[^0-9.]*/g, '')
+        const nameUrlSafe = app.name
+            .replace(/[^a-z0-9A-Z-_]/g, '-')
+            .replace(/(^[-]+)|([-]+$)/g, '')
+        const DEPLOYMENT_PATH = path.resolve(DEPLOYMENTS_PATH, nameUrlSafe, event.release.tag_name)
+        await mkdir(DEPLOYMENT_PATH, { recursive: true })
+
+        const commands = [
+            'git clone --filter=blob:none --no-checkout ' + body.repository.clone_url + ' .',
+            'git sparse-checkout init --cone',
+            'git sparse-checkout set ' + app.gitCheckout.join(' '),
+            'git checkout ' + app.gitBranch
+        ]
+        exec(commands.join(' && '), { cwd: DEPLOYMENT_PATH }, async (error, stdout, stderr) => {
+            if (error) {
+                console.error(error)
+                res.statusCode = 400
+                return res.end('Failed to checkout to the repository.')
+            }
+
+            console.log(stderr)
+            console.log(stdout)
+
+            await fetchSecretsAws({
+                dest: path.resolve(DEPLOYMENT_PATH, '.env'),
+                aws: {
+                    secretName: app.aws.secretName,
+                    credentials: {
+                        region: process.env.AWS_REGION,
+                        accessKey: process.env.AWS_ACCESS_KEY,
+                        accessKeySecret: process.env.AWS_ACCESS_KEY_SECRET,
+                    },
+                },
+            })
+
+            exec('APP_IMAGE_VERSION=' + tag + ' docker compose --profile production up -d', async (error2, stdout2, stderr2) => {
+                if (error2) {
+                    console.error(error2)
+                    res.statusCode = 400
+                    return res.end('Failed to start compose services.')
+                }
+
+                console.log(stderr2)
+                console.log(stdout2)
+
+                res.statusCode = 200
+                return res.end('Success.')
+            })
+        })
+    }
 
     function verifySignature(body, signature) {
         const hmac = crypto.createHmac('sha256', env.get('GITHUB_WEBHOOK_SECRET_TOKEN'))

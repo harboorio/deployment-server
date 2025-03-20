@@ -10,7 +10,7 @@ import { fetchSecretsAws } from '@harboor/core'
 (async function initServer() {
     const HOME_PATH = os.homedir()
     const DEPLOYMENTS_PATH = path.resolve(HOME_PATH, 'deployments')
-    await mkdir(DEPLOYMENTS_PATH)
+    await mkdir(DEPLOYMENTS_PATH, { recursive: true })
 
     const secrets =
         process.env.NODE_ENV === "development"
@@ -96,7 +96,7 @@ import { fetchSecretsAws } from '@harboor/core'
         await mkdir(DEPLOYMENT_PATH, { recursive: true })
 
         const commands = [
-            'git clone --filter=blob:none --no-checkout ' + body.repository.clone_url + ' .',
+            'git clone --filter=blob:none --no-checkout ' + event.repository.clone_url + ' .',
             'git sparse-checkout init --cone',
             'git sparse-checkout set ' + app.gitCheckout.join(' '),
             'git checkout ' + app.gitBranch

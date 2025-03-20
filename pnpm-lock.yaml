@@ -11,6 +11,9 @@ importers:
       '@harboor/core':
         specifier: ^1.3.1
         version: 1.3.1
+      nanoid:
+        specifier: ^5.1.5
+        version: 5.1.5
 
 packages:
 
@@ -298,6 +301,11 @@ packages:
 
   fast-xml-parser@4.4.1:
     resolution: {integrity: sha512-xkjOecfnKGkSsOwtZ5Pz7Us/T6mrbPQrq0nh+aCO5V9nk5NLWmasAHumTKjiPJPWANe+kAZ84Jc8ooJkzZ88Sw==}
+    hasBin: true
+
+  nanoid@5.1.5:
+    resolution: {integrity: sha512-Ir/+ZpE9fDsNH0hQ3C68uyThDXzYcim2EqcZ8zn8Chtt1iylPT9xXJB0kPCnqzgcEGikO9RxSrh63MsmVCU7Fw==}
+    engines: {node: ^18 || >=20}
     hasBin: true
 
   strnum@1.1.2:
@@ -934,6 +942,8 @@ snapshots:
   fast-xml-parser@4.4.1:
     dependencies:
       strnum: 1.1.2
+
+  nanoid@5.1.5: {}
 
   strnum@1.1.2: {}
 

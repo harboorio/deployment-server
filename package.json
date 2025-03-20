@@ -13,6 +13,7 @@
         "start": "NODE_ENV=production node server.js"
     },
     "dependencies": {
-        "@harboor/core": "^1.3.1"
+        "@harboor/core": "^1.3.1",
+        "nanoid": "^5.1.5"
     }
 }

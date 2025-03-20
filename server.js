@@ -1,11 +1,12 @@
 import os from 'node:os'
 import { exec } from 'node:child_process'
 import path from 'node:path'
-import { mkdir } from 'node:fs/promises'
+import { mkdir, rm } from 'node:fs/promises'
 import http from 'node:http'
 import { Buffer } from 'node:buffer'
 import crypto from 'node:crypto'
 import { fetchSecretsAws } from '@harboor/core'
+import { customAlphabet } from 'nanoid'
 
 (async function initServer() {
     const HOME_PATH = os.homedir()
@@ -35,6 +36,8 @@ import { fetchSecretsAws } from '@harboor/core'
     })
 
     server.on('request', async function onRequest(req, res) {
+        console.log(req.method + ' ' + req.url)
+
         res
             .setHeader("Referrer-Policy", "strict-origin-when-cross-origin")
             .setHeader("Strict-Transport-Security", "max-age=31536000")
@@ -67,17 +70,22 @@ import { fetchSecretsAws } from '@harboor/core'
             return res.end('Invalid body.')
         }
 
-        console.log(body)
+        const isVerifiedAppRelease = body?.action === 'published' && body?.release && apps.some((app) => app.name === body.repository.full_name)
 
-        if (body?.action === 'published' && body?.release && apps.some((app) => app.name === body.repository.full_name)) {
-            console.log('Deploying ' + body.repository.full_name + ':' + body.release.tag_name)
-            const app = apps.find((app) => app.name === body.repository.full_name)
-            await deploy(app, body, res)
+        if (!isVerifiedAppRelease) {
+            res.statusCode = 200
+            return res.end(`Couldn't find the verified application.`)
         }
 
-        res.statusCode = 200
-        res.setHeader('Content-Type', 'application/json')
-        return res.end(JSON.stringify(body, null, 4))
+        console.log('Deploying ' + body.repository.full_name + ':' + body.release.tag_name)
+        const app = apps.find((app) => app.name === body.repository.full_name)
+        await deploy(app, body, function onDone(error, statusCode, msg) {
+            if (error) {
+                console.error(error)
+            }
+            res.statusCode = statusCode
+            return res.end(msg)
+        })
     })
 
     server.on("dropRequest", onDropRequest);
@@ -87,12 +95,13 @@ import { fetchSecretsAws } from '@harboor/core'
         console.info("Server is online.");
     });
 
-    async function deploy(app, event, res) {
+    async function deploy(app, event, onDone) {
         const tag = event.release.tag_name.replace(/[^0-9.]*/g, '')
         const nameUrlSafe = app.name
             .replace(/[^a-z0-9A-Z-_]/g, '-')
             .replace(/(^[-]+)|([-]+$)/g, '')
-        const DEPLOYMENT_PATH = path.resolve(DEPLOYMENTS_PATH, nameUrlSafe, event.release.tag_name)
+        const pathName = ['prod', nameUrlSafe, event.release.tag_name, generateDeploymentSuffix()].join('-')
+        const DEPLOYMENT_PATH = path.resolve(DEPLOYMENTS_PATH, pathName)
         await mkdir(DEPLOYMENT_PATH, { recursive: true })
 
         const commands = [
@@ -103,16 +112,15 @@ import { fetchSecretsAws } from '@harboor/core'
         ]
         exec(commands.join(' && '), { cwd: DEPLOYMENT_PATH }, async (error, stdout, stderr) => {
             if (error) {
-                console.error(error)
-                res.statusCode = 400
-                return res.end('Failed to checkout to the repository.')
+                return onDone(error, 400, 'Failed to checkout to the repository.')
             }
 
             console.log(stderr)
             console.log(stdout)
 
+            const secretsFilePath = path.resolve(DEPLOYMENT_PATH, '.env')
             await fetchSecretsAws({
-                dest: path.resolve(DEPLOYMENT_PATH, '.env'),
+                dest: secretsFilePath,
                 aws: {
                     secretName: app.aws.secretName,
                     credentials: {
@@ -125,19 +133,22 @@ import { fetchSecretsAws } from '@harboor/core'
 
             const commands2 = ['APP_IMAGE_VERSION=' + tag + ' docker compose --profile production up -d']
             exec(commands2.join(' && '), { cwd: DEPLOYMENT_PATH }, async (error2, stdout2, stderr2) => {
+                await rm(secretsFilePath)
+
                 if (error2) {
-                    console.error(error2)
-                    res.statusCode = 400
-                    return res.end('Failed to start compose services.')
+                    return onDone(error2, 400, 'Failed to start compose services.')
                 }
 
                 console.log(stderr2)
                 console.log(stdout2)
 
-                res.statusCode = 200
-                return res.end('Success.')
+                return onDone(null, 200, 'Success.')
             })
         })
+
+        function generateDeploymentSuffix() {
+            return customAlphabet('1234567890abcdefghijklmnopqrstuvwxyz', 6)()
+        }
     }
 
     function verifySignature(body, signature) {

@@ -7,6 +7,7 @@ import { Buffer } from 'node:buffer'
 import crypto from 'node:crypto'
 import { fetchSecretsAws } from '@harboor/core'
 import { customAlphabet } from 'nanoid'
+import { debounce } from 'underscore'
 
 (async function initServer() {
     const HOME_PATH = os.homedir()
@@ -26,10 +27,40 @@ import { customAlphabet } from 'nanoid'
                     },
                 },
             });
-    const env = createEnvironment(secrets);
+    const env = createEnvironment(secrets)
+
+    console.log('Environment is ready.')
+
     const apps = [
-        { name: 'harboorio/auth-backend', aws: { secretName: 'prod/harboor/auth' }, gitBranch: 'main', gitCheckout: ['compose.yaml'] }
+        {
+            name: 'harboorio/auth-backend',
+            aws: {
+                secretName: 'prod/harboor/auth'
+            },
+            git: {
+                defaultBranch: 'main',
+                partialClones: ['compose.yaml']
+            }
+        }
     ]
+
+    let deployments = []
+    const checkForDeploymentsDebounced = debounce(checkForDeployments, 3000)
+    const deploymentsQueue = []
+
+    setInterval(async () => {
+        if (deploymentsQueue.length === 0) return
+
+        const deployment = deploymentsQueue.shift()
+        const _name = deployment.releaseEvent.repository.full_name + ':' + deployment.releaseEvent.release.tag_name
+        console.log('Picking up the oldest entry in deployments (' + _name + ')')
+        const result = await deploy(deployment.app, deployment.releaseEvent, deployment.packageEvent)
+        if (result === true) console.log('Deployed ' + _name + ' successfully')
+        else console.log(result)
+    }, 3000)
+
+    console.log('Watching deployment entries.')
+
     const server = http.createServer({
         keepAliveTimeout: 30000,
         requestTimeout: 60000,
@@ -44,14 +75,15 @@ import { customAlphabet } from 'nanoid'
             .setHeader("Vary", "Origin,Accept-Language");
 
         if (req.method !== 'POST' && req.url !== '/on/release') {
-            res.statusCode = 400
-            return res.end('Invalid request.')
+            res.statusCode = 404
+            return res.end('Not found')
         }
 
+        const eventName = req.headers['x-github-event']
         const signature = req.headers['x-hub-signature-256']
-        if (!signature) {
-            res.statusCode = 400
-            return res.end('Missing signature.')
+        if (!eventName || !signature) {
+            res.statusCode = 404
+            return res.end('Invalid request')
         }
 
         const bodyBuffer = await readBody(req)
@@ -67,52 +99,71 @@ import { customAlphabet } from 'nanoid'
             body = JSON.parse(bodyString)
         } catch (e) {
             res.statusCode = 400
-            return res.end('Invalid body.')
+            return res.end('Invalid request.')
         }
 
-        const isVerifiedAppRelease = body?.action === 'published' && body?.release && apps.some((app) => app.name === body.repository.full_name)
+        // now we can tell github that we are "accepting" the request
+        res.statusCode = 202
+        res.end('Accepted')
 
-        if (!isVerifiedAppRelease) {
-            res.statusCode = 200
-            return res.end(`Couldn't find the verified application.`)
+        const app = findApp(body)
+
+        if (!app) {
+            return
         }
 
-        console.log('Deploying ' + body.repository.full_name + ':' + body.release.tag_name)
-        const app = apps.find((app) => app.name === body.repository.full_name)
-        await deploy(app, body, function onDone(error, statusCode, msg) {
-            if (error) {
-                console.error(error)
-            }
-            res.statusCode = statusCode
-            return res.end(msg)
-        })
+        const hookName = eventName + '_' + (body.action ?? '')
+
+        switch (hookName) {
+            case 'release_published':
+                if (body?.release?.tag_name) {
+                    deployments.push({ app, version: body.release.tag_name, releaseEvent: body, ready: false, queued: false })
+                }
+                break
+            case 'package_published':
+                if (body?.package?.package_type === 'CONTAINER' && body.package?.package_version?.container_metadata?.tag?.name) {
+                    const packageTag = body.package.package_version.container_metadata.tag.name
+                    const i = deployments.findIndex((d) => d.version.replace(/[^0-9.]*/g, '') === packageTag)
+                    if (i > -1) {
+                        deployments[i].packageEvent = body
+                        deployments[i].ready = true
+                    }
+                }
+                break
+            default:
+                return
+        }
+
+        checkForDeploymentsDebounced()
     })
 
     server.on("dropRequest", onDropRequest);
     server.on("clientError", onClientError);
 
     server.listen(env.get('SERVER_PORT') ?? 3000, "0.0.0.0", () => {
-        console.info("Server is online.");
+        console.info("Server (:" + (env.get('SERVER_PORT') ?? 3000) + ") is online.");
     });
 
-    async function deploy(app, event, onDone) {
-        const tag = event.release.tag_name.replace(/[^0-9.]*/g, '')
+    async function deploy(app, releaseEvent, packageEvent) {
+        // create deployment directory
+        const tag = releaseEvent.release.tag_name.replace(/[^0-9.]*/g, '')
         const nameUrlSafe = app.name
             .replace(/[^a-z0-9A-Z-_]/g, '-')
             .replace(/(^[-]+)|([-]+$)/g, '')
-        const pathName = ['prod', nameUrlSafe, event.release.tag_name, generateDeploymentSuffix()].join('-')
+        const pathName = ['prod', nameUrlSafe, releaseEvent.release.tag_name, generateDeploymentSuffix()].join('-')
         const DEPLOYMENT_PATH = path.resolve(DEPLOYMENTS_PATH, pathName)
         await mkdir(DEPLOYMENT_PATH, { recursive: true })
 
+        // do partial clone for the deploy
         const commands = [
-            'git clone --filter=blob:none --no-checkout ' + event.repository.clone_url + ' .',
+            'git clone --filter=blob:none --no-checkout ' + releaseEvent.repository.clone_url + ' .',
             'git sparse-checkout init --cone',
-            'git sparse-checkout set ' + app.gitCheckout.join(' '),
-            'git checkout ' + app.gitBranch
+            'git sparse-checkout set ' + app.git.partialClones.join(' '),
+            'git checkout ' + app.git.defaultBranch
         ]
         exec(commands.join(' && '), { cwd: DEPLOYMENT_PATH, timeout: 30000 }, async (error, stdout, stderr) => {
             if (error) {
-                return onDone(error, 400, 'Failed to checkout to the repository.')
+                return error
             }
 
             console.log(stderr)
@@ -136,19 +187,47 @@ import { customAlphabet } from 'nanoid'
                 await rm(secretsFilePath)
 
                 if (error2) {
-                    return onDone(error2, 400, 'Failed to start compose services.')
+                    return error2
                 }
 
                 console.log(stderr2)
                 console.log(stdout2)
 
-                return onDone(null, 200, 'Success.')
+                return true
             })
         })
 
         function generateDeploymentSuffix() {
             return customAlphabet('1234567890abcdefghijklmnopqrstuvwxyz', 6)()
         }
+    }
+
+    function checkForDeployments() {
+        console.log('Checking for deployments. (' + deployments.length + ')')
+
+        for (let i=0; i<deployments.length; i++) {
+            if (deployments[i].ready) {
+                deploymentsQueue.push({
+                    app: deployments[i].app,
+                    releaseEvent: deployments[i].releaseEvent,
+                    packageEvent: deployments[i].packageEvent
+                })
+                deployments[i].queued = true
+                console.log('Deployment queue updated with ' + deployments[i].app.name + ':' + deployments[i].releaseEvent.release.tag_name)
+            }
+        }
+
+        deployments = deployments.filter((d) => !d.queued)
+    }
+
+    function findApp(event) {
+        const compare = (app) => app.name === event.repository.full_name
+        const compare2 = (app) => event.package.package_version.package_url.includes(app.name)
+        return event && event.repository && apps.some(compare)
+            ? apps.find(compare)
+            : event && event.package && apps.some(compare2)
+                ? apps.find(compare2)
+                : null
     }
 
     function verifySignature(body, signature) {

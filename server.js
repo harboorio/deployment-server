@@ -55,8 +55,7 @@ import { debounce } from 'underscore'
         const _name = deployment.releaseEvent.repository.full_name + ':' + deployment.releaseEvent.release.tag_name
         console.log('Picking up the oldest entry in deployments (' + _name + ')')
         const result = await deploy(deployment.app, deployment.releaseEvent, deployment.packageEvent)
-        if (result === true) console.log('Deployed ' + _name + ' successfully')
-        else console.log(result)
+        if (result !== true) console.log(result)
     }, 3000)
 
     console.log('Watching deployment entries.')
@@ -146,6 +145,9 @@ import { debounce } from 'underscore'
 
     async function deploy(app, releaseEvent, packageEvent) {
         return new Promise(async (resolve, reject) => {
+            const _name = releaseEvent.repository.full_name + ':' + releaseEvent.release.tag_name
+            console.log(_name + ': deploying...')
+
             // create deployment directory
             const tag = releaseEvent.release.tag_name.replace(/[^0-9.]*/g, '')
             const nameUrlSafe = app.name
@@ -153,9 +155,16 @@ import { debounce } from 'underscore'
                 .replace(/(^[-]+)|([-]+$)/g, '')
             const pathName = ['prod', nameUrlSafe, releaseEvent.release.tag_name, generateDeploymentSuffix()].join('-')
             const DEPLOYMENT_PATH = path.resolve(DEPLOYMENTS_PATH, pathName)
-            await mkdir(DEPLOYMENT_PATH, { recursive: true })
+            console.log(_name + ': creating deployment directory (' + DEPLOYMENT_PATH + ')...')
+            try {
+                await mkdir(DEPLOYMENT_PATH, { recursive: true })
+            } catch (e) {
+                return resolve(e)
+            }
+            console.log(_name + ': creating deployment directory (' + DEPLOYMENT_PATH + ')... done.')
 
             // do partial clone for the deploy
+            console.log(_name + ': fetching repository...')
             const commands = [
                 'git clone --filter=blob:none --no-checkout ' + releaseEvent.repository.clone_url + ' .',
                 'git sparse-checkout init --cone',
@@ -169,20 +178,28 @@ import { debounce } from 'underscore'
 
                 console.log(stderr)
                 console.log(stdout)
+                console.log(_name + ': fetching repository... done.')
 
+                console.log(_name + ': fetching secrets...')
                 const secretsFilePath = path.resolve(DEPLOYMENT_PATH, '.env')
-                await fetchSecretsAws({
-                    dest: secretsFilePath,
-                    aws: {
-                        secretName: app.aws.secretName,
-                        credentials: {
-                            region: process.env.AWS_REGION,
-                            accessKey: process.env.AWS_ACCESS_KEY,
-                            accessKeySecret: process.env.AWS_ACCESS_KEY_SECRET,
+                try {
+                    await fetchSecretsAws({
+                        dest: secretsFilePath,
+                        aws: {
+                            secretName: app.aws.secretName,
+                            credentials: {
+                                region: process.env.AWS_REGION,
+                                accessKey: process.env.AWS_ACCESS_KEY,
+                                accessKeySecret: process.env.AWS_ACCESS_KEY_SECRET,
+                            },
                         },
-                    },
-                })
+                    })
+                } catch (e) {
+                    return resolve(e)
+                }
+                console.log(_name + ': fetching secrets... done.')
 
+                console.log(_name + ': starting application...')
                 const commands2 = ['APP_IMAGE_VERSION=' + tag + ' docker compose --profile production up -d --quiet-pull -y']
                 exec(commands2.join(' && '), { cwd: DEPLOYMENT_PATH, timeout: 30000 }, async (error2, stdout2, stderr2) => {
                     await rm(secretsFilePath)
@@ -193,6 +210,8 @@ import { debounce } from 'underscore'
 
                     console.log(stderr2)
                     console.log(stdout2)
+                    console.log(_name + ': starting application... done.')
+                    console.log(_name + ': deploying... done.')
 
                     return resolve(true)
                 })

@@ -145,55 +145,57 @@ import { debounce } from 'underscore'
     });
 
     async function deploy(app, releaseEvent, packageEvent) {
-        // create deployment directory
-        const tag = releaseEvent.release.tag_name.replace(/[^0-9.]*/g, '')
-        const nameUrlSafe = app.name
-            .replace(/[^a-z0-9A-Z-_]/g, '-')
-            .replace(/(^[-]+)|([-]+$)/g, '')
-        const pathName = ['prod', nameUrlSafe, releaseEvent.release.tag_name, generateDeploymentSuffix()].join('-')
-        const DEPLOYMENT_PATH = path.resolve(DEPLOYMENTS_PATH, pathName)
-        await mkdir(DEPLOYMENT_PATH, { recursive: true })
+        return new Promise(async (resolve, reject) => {
+            // create deployment directory
+            const tag = releaseEvent.release.tag_name.replace(/[^0-9.]*/g, '')
+            const nameUrlSafe = app.name
+                .replace(/[^a-z0-9A-Z-_]/g, '-')
+                .replace(/(^[-]+)|([-]+$)/g, '')
+            const pathName = ['prod', nameUrlSafe, releaseEvent.release.tag_name, generateDeploymentSuffix()].join('-')
+            const DEPLOYMENT_PATH = path.resolve(DEPLOYMENTS_PATH, pathName)
+            await mkdir(DEPLOYMENT_PATH, { recursive: true })
 
-        // do partial clone for the deploy
-        const commands = [
-            'git clone --filter=blob:none --no-checkout ' + releaseEvent.repository.clone_url + ' .',
-            'git sparse-checkout init --cone',
-            'git sparse-checkout set ' + app.git.partialClones.join(' '),
-            'git checkout ' + app.git.defaultBranch
-        ]
-        exec(commands.join(' && '), { cwd: DEPLOYMENT_PATH, timeout: 30000 }, async (error, stdout, stderr) => {
-            if (error) {
-                return error
-            }
-
-            console.log(stderr)
-            console.log(stdout)
-
-            const secretsFilePath = path.resolve(DEPLOYMENT_PATH, '.env')
-            await fetchSecretsAws({
-                dest: secretsFilePath,
-                aws: {
-                    secretName: app.aws.secretName,
-                    credentials: {
-                        region: process.env.AWS_REGION,
-                        accessKey: process.env.AWS_ACCESS_KEY,
-                        accessKeySecret: process.env.AWS_ACCESS_KEY_SECRET,
-                    },
-                },
-            })
-
-            const commands2 = ['APP_IMAGE_VERSION=' + tag + ' docker compose --profile production up -d --quiet-pull -y']
-            exec(commands2.join(' && '), { cwd: DEPLOYMENT_PATH, timeout: 30000 }, async (error2, stdout2, stderr2) => {
-                await rm(secretsFilePath)
-
-                if (error2) {
-                    return error2
+            // do partial clone for the deploy
+            const commands = [
+                'git clone --filter=blob:none --no-checkout ' + releaseEvent.repository.clone_url + ' .',
+                'git sparse-checkout init --cone',
+                'git sparse-checkout set ' + app.git.partialClones.join(' '),
+                'git checkout ' + app.git.defaultBranch
+            ]
+            exec(commands.join(' && '), { cwd: DEPLOYMENT_PATH, timeout: 30000 }, async (error, stdout, stderr) => {
+                if (error) {
+                    return resolve(error)
                 }
 
-                console.log(stderr2)
-                console.log(stdout2)
+                console.log(stderr)
+                console.log(stdout)
 
-                return true
+                const secretsFilePath = path.resolve(DEPLOYMENT_PATH, '.env')
+                await fetchSecretsAws({
+                    dest: secretsFilePath,
+                    aws: {
+                        secretName: app.aws.secretName,
+                        credentials: {
+                            region: process.env.AWS_REGION,
+                            accessKey: process.env.AWS_ACCESS_KEY,
+                            accessKeySecret: process.env.AWS_ACCESS_KEY_SECRET,
+                        },
+                    },
+                })
+
+                const commands2 = ['APP_IMAGE_VERSION=' + tag + ' docker compose --profile production up -d --quiet-pull -y']
+                exec(commands2.join(' && '), { cwd: DEPLOYMENT_PATH, timeout: 30000 }, async (error2, stdout2, stderr2) => {
+                    await rm(secretsFilePath)
+
+                    if (error2) {
+                        return resolve(error2)
+                    }
+
+                    console.log(stderr2)
+                    console.log(stdout2)
+
+                    return resolve(true)
+                })
             })
         })
 
